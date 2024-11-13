@@ -30,7 +30,8 @@ public class AdvertisementSelectionLogic {
 
     /**
      * Constructor for AdvertisementSelectionLogic.
-     * @param contentDao Source of advertising content.
+     *
+     * @param contentDao        Source of advertising content.
      * @param targetingGroupDao Source of targeting groups for each advertising content.
      */
     @Inject
@@ -42,6 +43,7 @@ public class AdvertisementSelectionLogic {
 
     /**
      * Setter for Random class.
+     *
      * @param random generates random number used to select advertisements.
      */
     public void setRandom(Random random) {
@@ -53,13 +55,12 @@ public class AdvertisementSelectionLogic {
      * eligible content with the highest click through rate.  If no advertisement is available or eligible, returns an
      * EmptyGeneratedAdvertisement.
      *
-     * @param customerId - the customer to generate a custom advertisement for
+     * @param customerId    - the customer to generate a custom advertisement for
      * @param marketplaceId - the id of the marketplace the advertisement will be rendered on
      * @return an advertisement customized for the customer id provided, or an empty advertisement if one could
-     *     not be generated.
+     * not be generated.
      */
     public GeneratedAdvertisement selectAdvertisement(String customerId, String marketplaceId) {
-        GeneratedAdvertisement generatedAdvertisement = new EmptyGeneratedAdvertisement();
         if (StringUtils.isEmpty(marketplaceId)) {
             LOG.warn("MarketplaceId cannot be null or empty. Returning empty ad.");
             return new EmptyGeneratedAdvertisement();
@@ -73,34 +74,38 @@ public class AdvertisementSelectionLogic {
 
         TargetingEvaluator evaluator = new TargetingEvaluator(new RequestContext(customerId, marketplaceId));
 
-        // Filter eligible ads that have valid content and meet all targeting criteria
-        List<AdvertisementContent> eligibleAds = contents.stream()
-                .filter(content -> {
-                    // Check if the content is non-blank
-                    if (StringUtils.isBlank(content.getRenderableContent())) {
-                        return false;
-                    }
+        // Map to store advertisements by their max click-through rate
+        TreeMap<Double, AdvertisementContent> adsByCTR = new TreeMap<>(Comparator.reverseOrder());
 
-                    // Retrieve and evaluate targeting groups
-                    List<TargetingGroup> targetingGroups = targetingGroupDao.get(content.getContentId());
-                    if (CollectionUtils.isEmpty(targetingGroups)) {
-                        return false;
-                    }
+        for (AdvertisementContent content : contents) {
+            if (StringUtils.isBlank(content.getRenderableContent())) {
+                continue;
+            }
 
-                    // Check if all targeting groups evaluate to TRUE
-                    return targetingGroups.stream().allMatch(group -> evaluator.evaluate(group).isTrue());
-                })
-                .collect(Collectors.toList());
+            List<TargetingGroup> targetingGroups = targetingGroupDao.get(content.getContentId());
+            if (CollectionUtils.isEmpty(targetingGroups)) {
+                continue;
+            }
+
+            // Find the maximum click-through rate among the eligible targeting groups
+            OptionalDouble maxCTR = targetingGroups.stream()
+                    .filter(group -> evaluator.evaluate(group).isTrue())
+                    .mapToDouble(TargetingGroup::getClickThroughRate)
+                    .max();
+
+            if (maxCTR.isPresent()) {
+                adsByCTR.put(maxCTR.getAsDouble(), content);
+            }
+        }
 
         // Return an empty ad if no eligible ads are found
-        if (eligibleAds.isEmpty()) {
+        if (adsByCTR.isEmpty()) {
             LOG.warn("No eligible advertisements found for customerId: " + customerId +
                     " in marketplaceId: " + marketplaceId);
             return new EmptyGeneratedAdvertisement();
         }
 
-        // Randomly select an eligible advertisement
-        AdvertisementContent randomEligibleAd = eligibleAds.get(random.nextInt(eligibleAds.size()));
-        return new GeneratedAdvertisement(randomEligibleAd);
+        // Return the ad with the highest click-through rate
+        return new GeneratedAdvertisement(adsByCTR.firstEntry().getValue());
     }
 }
